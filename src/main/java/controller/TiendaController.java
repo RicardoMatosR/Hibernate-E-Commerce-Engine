@@ -11,11 +11,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 
 import database.HibernateUtil;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
+import security.PasswordHasher;
 
 public class TiendaController {
 
@@ -29,18 +31,44 @@ public class TiendaController {
 
     // PRODUCT METHODS
 
-    public void importProducts() {
-        HttpClient client = null;
-        Gson gson = new Gson();
+    private static final String PRODUCTS_URL = "https://dummyjson.com/products";
+
+    // One HttpClient for the whole app: it is reusable and keeps connections open.
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+
+    // Downloads the products from DummyJSON and saves them. Because each product keeps
+    // its DummyJSON id, merge() inserts the new ones and updates the stock of the existing ones.
+    // Returns true only if the API answered 200 and the products were saved.
+    public boolean importProducts() {
         try {
-            client = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder().GET().uri(URI.create("https://dummyjson.com/products"))
+            HttpRequest request = HttpRequest.newBuilder()
+                    .GET()
+                    .uri(URI.create(PRODUCTS_URL))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Accept", "application/json")
                     .build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            ProductResponse productResponse = gson.fromJson(response.body(), ProductResponse.class);
-            productDAO.insertProducts(productResponse.getProducts());
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                System.out.println("DummyJSON answered HTTP " + response.statusCode() + ". Nothing was imported.");
+                return false;
+            }
+
+            ProductResponse productResponse = new Gson().fromJson(response.body(), ProductResponse.class);
+            if (productResponse == null || productResponse.getProducts() == null) {
+                System.out.println("Unexpected JSON from DummyJSON. Nothing was imported.");
+                return false;
+            }
+            return productDAO.insertProducts(productResponse.getProducts());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.out.println("Import interrupted.");
+            return false;
         } catch (Exception e) {
             System.out.println("Connection failed when importing products: " + e.getMessage());
+            return false;
         }
     }
 
@@ -54,74 +82,60 @@ public class TiendaController {
         }
     }
 
-    public boolean sellProduct(String email, String pass, int idProduct) {
-        // SINGLE ATOMIC TRANSACTION
-        Session session = null;
+    // Buys one unit of a product for an already logged-in user, in ONE atomic transaction.
+    // Stock and wallet are checked and updated by the database in a single UPDATE each
+    // ("... WHERE stock >= 1"), so two customers buying the last unit at the same time
+    // can never both succeed (no race condition). If anything fails, everything is rolled back.
+    public boolean sellProduct(Long userId, int idProduct) {
         Transaction transaction = null;
 
-        try {
-            session = HibernateUtil.getSessionFactory().openSession();
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
             transaction = session.beginTransaction();
 
-            // 1. Verify credentials and fetch user in this session
-            User sessionUser;
-            try {
-                sessionUser = session
-                        .createQuery("FROM User u WHERE u.email = :email AND u.password = :pass", User.class)
-                        .setParameter("email", email)
-                        .setParameter("pass", pass)
-                        .getSingleResult();
-            } catch (Exception e) {
-                System.out.println("Invalid credentials.");
-                transaction.rollback();
-                return false;
-            }
-
-            // 2. Fetch product in the same session
+            // 1. The product must exist
             Product product = session.find(Product.class, (long) idProduct);
-
-            // 3. VALIDATIONS
             if (product == null) {
                 System.out.println("Product not found.");
                 transaction.rollback();
                 return false;
             }
-            if (product.getStock() <= 0) {
+            double price = product.getPrice();
+
+            // 2. Take one unit of stock, only if there is any left (check + update in one step)
+            int stockUpdated = session.createMutationQuery(
+                            "UPDATE Product p SET p.stock = p.stock - 1 WHERE p.id = :id AND p.stock >= 1")
+                    .setParameter("id", product.getId())
+                    .executeUpdate();
+            if (stockUpdated == 0) {
                 System.out.println("Out of stock for: " + product.getTitle());
                 transaction.rollback();
                 return false;
             }
-            if (sessionUser.getWallet() < product.getPrice()) {
-                System.out.println("Insufficient funds. You have " + sessionUser.getWallet()
-                        + " Euros but the product costs " + product.getPrice() + " Euros.");
-                transaction.rollback();
+
+            // 3. Charge the wallet, only if the user has enough money (check + update in one step)
+            int walletUpdated = session.createMutationQuery(
+                            "UPDATE User u SET u.wallet = u.wallet - :price WHERE u.id = :id AND u.wallet >= :price")
+                    .setParameter("price", price)
+                    .setParameter("id", userId)
+                    .executeUpdate();
+            if (walletUpdated == 0) {
+                System.out.println("Insufficient funds for: " + product.getTitle() + " (" + price + " Euros).");
+                transaction.rollback(); // also gives the stock unit back
                 return false;
             }
 
-            // 4. EXECUTION
-            // Subtract stock and balance in memory
-            product.setStock(product.getStock() - 1);
-            sessionUser.setWallet(sessionUser.getWallet() - product.getPrice());
-
-            // Prepare changes for the database
-            session.merge(product);
-            session.merge(sessionUser);
-
+            // 4. Both steps worked: make them permanent together
             transaction.commit();
             System.out.println("Purchase successful: " + product.getTitle());
-            System.out.println("Remaining balance: " + sessionUser.getWallet() + " Euros");
+            System.out.println("Remaining balance: " + userDAO.getWalletBalance(userId) + " Euros");
             return true;
 
         } catch (Exception e) {
-            // If anything fails, rollback everything
-            if (transaction != null)
+            if (transaction != null && transaction.isActive()) {
                 transaction.rollback();
-            System.out.println("Transaction error. Rollback executed.");
-            e.printStackTrace();
+            }
+            System.out.println("Transaction error. Rollback executed: " + e.getMessage());
             return false;
-        } finally {
-            if (session != null)
-                session.close();
         }
     }
 
@@ -143,7 +157,9 @@ public class TiendaController {
         return userDAO.getProfileById(id);
     }
 
+    // Registers a new user. The password is stored as a salted hash (PBKDF2), never in plain text.
     public boolean signInUser(User user) {
+        user.setPassword(PasswordHasher.hash(user.getPassword()));
         return userDAO.insertUser(user);
     }
 
@@ -157,7 +173,7 @@ public class TiendaController {
     }
 
     public void listAdmins() {
-        List<User> users = userDAO.getUsersByProfile(1); // 1 = Admin
+        List<User> users = userDAO.getUsersByProfile(1L); // 1 = Admin
         if (users.isEmpty()) {
             System.out.println("No admins available.");
         } else {
@@ -166,7 +182,7 @@ public class TiendaController {
     }
 
     public void listCustomers() {
-        List<User> users = userDAO.getUsersByProfile(2); // 2 = Customer
+        List<User> users = userDAO.getUsersByProfile(2L); // 2 = Customer
         if (users.isEmpty()) {
             System.out.println("No customers available.");
         } else {

@@ -13,7 +13,7 @@ A robust backend management system developed in Java that utilizes Hibernate ORM
 
 ##  Technology Stack
 
-*   **Language**: Java (JDK 17+)
+*   **Language**: Java (JDK 21+)
 *   **ORM**: Hibernate 7
 *   **Database**: MySQL
 *   **Project Manager**: Maven
@@ -22,43 +22,68 @@ A robust backend management system developed in Java that utilizes Hibernate ORM
 
 ## ⚙️ Installation and Setup
 
-**Prerequisites:**
-*   An active MySQL server running locally.
-*   JDK 17 or higher installed.
+**Prerequisites:** JDK 21+, Maven and Docker (or your own MySQL server).
 
 **1. Clone the repository:**
 ```bash
-git clone https://github.com/RicardoMatosR/Hibernate-Store-E-Commerce-Engine.git
-cd Hibernate-Store-E-Commerce-Engine
+git clone https://github.com/RicardoMatosR/Hibernate-E-Commerce-Engine.git
+cd Hibernate-E-Commerce-Engine
 ```
 
-**2. Database Configuration:**
-Modify the `src/main/resources/hibernate.cfg.xml` file with your local MySQL server credentials:
-```xml
-<property name="hibernate.connection.url">jdbc:mysql://localhost:3306/tienda_ces</property>
-<property name="hibernate.connection.username">YOUR_USERNAME</property>
-<property name="hibernate.connection.password">YOUR_PASSWORD</property>
-```
-
-**3. Compilation and Execution:**
-If you are using Maven, simply run:
+**2. Start the database (Docker):**
 ```bash
-mvn clean compile
-mvn exec:java -Dexec.mainClass="Main"
+docker compose up -d
 ```
+This starts MySQL 8.4 with the `tienda_ces` database. The tables are created automatically on the first run.
+
+**3. Run the app:**
+```bash
+mvn compile exec:java
+```
+
+Log in with the demo admin account **admin@ces.com / admin123**, import the products from DummyJSON, then register a customer and buy.
+
+### Using your own MySQL instead of Docker
+
+The connection is **never stored in the repository**. It is read from environment variables, with defaults that match `docker-compose.yml`:
+
+| Variable | Default |
+| --- | --- |
+| `DB_URL` | `jdbc:mysql://localhost:3306/tienda_ces` |
+| `DB_USER` | `tienda` |
+| `DB_PASSWORD` | `tienda` |
+
+```bash
+# Linux / macOS
+export DB_USER=myuser DB_PASSWORD=mypassword
+# Windows PowerShell
+$env:DB_USER="myuser"; $env:DB_PASSWORD="mypassword"
+```
+In IntelliJ: *Run > Edit Configurations > Environment variables*.
+
+If port 3306 is already in use, change it in `docker-compose.yml` (e.g. `"3307:3306"`) and set `DB_URL=jdbc:mysql://localhost:3307/tienda_ces`.
+
+## 🔒 Security and Concurrency Notes
+
+* **No secrets in the code**: database credentials come from environment variables.
+* **Hashed passwords**: stored as salted PBKDF2 hashes (built into the JDK), never in plain text and never printed.
+* **No race condition on the last unit**: stock and wallet are checked and updated by the database in a single atomic `UPDATE ... WHERE stock >= 1`. If two customers buy the last unit at the same time, only one succeeds. If the payment fails, the rollback returns the stock.
+* **Safe API calls**: one reusable `HttpClient`, timeouts and HTTP status checks before parsing the JSON.
 
 ## 📁 Project Structure
 
 ```text
-Hibernate-Store-E-Commerce-Engine/
+Hibernate-E-Commerce-Engine/
 │
 ├── src/main/java/
 │   ├── controller/      # Business logic and orchestration
 │   ├── dao/             # Data access (Transactional CRUD operations)
 │   ├── model/           # Hibernate Entities (JPA)
-│   ├── database/        # HibernateUtil configuration
+│   ├── database/        # HibernateUtil configuration (reads DB_* environment variables)
+│   ├── security/        # PasswordHasher (salted PBKDF2)
 │   └── Main.java        # Console interface and system startup
 │
-├── src/main/resources/  # hibernate.cfg.xml
+├── src/main/resources/  # hibernate.cfg.xml (no credentials)
+├── docker-compose.yml   # Local MySQL for development
 └── pom.xml              # Maven dependencies
 ```

@@ -6,6 +6,7 @@ import model.User;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.Transaction;
+import security.PasswordHasher;
 
 import java.util.Collections;
 import java.util.List;
@@ -75,16 +76,14 @@ public class UserDAO {
     }
 
     // Returns all Users belonging to a given Profile (role).
-    public List<User> getUsersByProfile(int profileId) {
-        Transaction transaction = null;
+    // A query (instead of profile.getUsers()) loads the users while the session is open,
+    // so there is no LazyInitializationException when the list is printed later.
+    public List<User> getUsersByProfile(long profileId) {
         try (Session session = sessionFactory.openSession()) {
-            transaction = session.beginTransaction();
-            Profile profile = session.find(Profile.class, profileId);
-            List<User> users = (profile != null) ? profile.getUsers() : Collections.emptyList();
-            transaction.commit();
-            return users;
+            return session.createQuery("FROM User u WHERE u.profile.id = :profileId", User.class)
+                    .setParameter("profileId", profileId)
+                    .getResultList();
         } catch (Exception e) {
-            if (transaction != null) transaction.rollback();
             System.out.println("[UserDAO] Error fetching users by profile: " + e.getMessage());
             return Collections.emptyList();
         }
@@ -122,15 +121,14 @@ public class UserDAO {
 
     // Extra Operations
 
+    // Looks the user up by email and compares the typed password with the stored hash (PBKDF2).
+    // Returns null if the email does not exist or the password is wrong (same message for both).
     public User login(String email, String password) {
-        try (Session session = sessionFactory.openSession()) {
-            return session.createQuery("FROM User u WHERE u.email = :email AND u.password = :pass", User.class)
-                    .setParameter("email", email)
-                    .setParameter("pass", password)
-                    .getSingleResult();
-        } catch (Exception e) {
-            return null; // Invalid credentials or not found
+        User user = getUserByEmail(email);
+        if (user != null && PasswordHasher.matches(password, user.getPassword())) {
+            return user;
         }
+        return null;
     }
 
     public Double getWalletBalance(Long userId) {
@@ -172,7 +170,8 @@ public class UserDAO {
             Long countAdmin = session.createQuery("SELECT count(u) FROM User u WHERE u.email = 'admin@ces.com'", Long.class).getSingleResult();
             if (countAdmin == 0 && adminProfile != null) {
                 System.out.println("[SYSTEM] Creating default SuperAdmin account...");
-                User admin = new User("Super", "Admin", "admin@ces.com", "admin123", adminProfile);
+                // Demo account for local testing (documented in the README). Stored hashed.
+                User admin = new User("Super", "Admin", "admin@ces.com", PasswordHasher.hash("admin123"), adminProfile);
                 session.persist(admin);
             }
             transaction.commit();

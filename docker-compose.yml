@@ -1,0 +1,22 @@
+# Local MySQL for development: `docker compose up -d`
+# The credentials below are local demo values, not real secrets.
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: tienda-mysql
+    environment:
+      MYSQL_DATABASE: tienda_ces
+      MYSQL_USER: tienda
+      MYSQL_PASSWORD: tienda
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - tienda-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  tienda-data:

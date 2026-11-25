@@ -99,8 +99,9 @@ public class Main {
                         switch (option) {
                             case "1":
                                 System.out.println("\n[INFO] Connecting to API and fetching stock...");
-                                controller.importProducts();
-                                System.out.println("Products successfully synced.");
+                                if (controller.importProducts()) {
+                                    System.out.println("Products successfully synced.");
+                                }
                                 break;
                             case "2":
                                 System.out.print("Enter exact first name to search: ");
@@ -154,7 +155,7 @@ public class Main {
                                 controller.listAllProducts();
                                 System.out.print("Product ID to purchase (e.g., 1, 2, 3...): ");
                                 int productId = Integer.parseInt(scanner.nextLine());
-                                controller.sellProduct(currentUser.getEmail(), currentUser.getPassword(), productId);
+                                controller.sellProduct(currentUser.getId(), productId);
                                 break;
                             case "2":
                                 Double balance = controller.getWalletBalance(currentUser.getId());

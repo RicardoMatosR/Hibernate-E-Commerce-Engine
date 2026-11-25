@@ -60,6 +60,5 @@ public class User {
         System.out.println("name = " + name);
         System.out.println("lastName = " + lastName);
         System.out.println("email = " + email);
-        System.out.println("password = " + password);
     }
 }

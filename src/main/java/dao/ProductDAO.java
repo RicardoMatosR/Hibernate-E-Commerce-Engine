@@ -17,7 +17,8 @@ public class ProductDAO {
         sessionFactory = HibernateUtil.getSessionFactory();
     }
 
-    public void insertProducts(List<Product> list) {
+    // Saves (inserts or updates) the whole list in one transaction: all or nothing.
+    public boolean insertProducts(List<Product> list) {
         Transaction transaction = null;
         try (Session session = sessionFactory.openSession()) {
             transaction = session.beginTransaction();
@@ -25,9 +26,11 @@ public class ProductDAO {
                 session.merge(item);
             }
             transaction.commit();
+            return true;
         } catch (Exception e) {
             if (transaction != null) transaction.rollback();
             System.out.println("Error inserting product list: " + e.getMessage());
+            return false;
         }
     }
 
